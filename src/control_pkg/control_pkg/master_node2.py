@@ -4,7 +4,7 @@ from srvs_pkg.srv import GetTargetPose
 from std_srvs.srv import SetBool, Trigger
 import time
 
-class MasterNode(Node):
+class MasterNode2(Node):
     def __init__(self):
         super().__init__('master_node')
         self.cli_v = self.create_client(GetTargetPose, '/get_target_pose')
@@ -12,14 +12,10 @@ class MasterNode(Node):
         self.cli_g = self.create_client(SetBool, '/control_gripper')
         self.cli_h = self.create_client(Trigger, '/robot_home')
         
-        self.Z_OFF = -80.0
+        self.Z_OFF = -85.0
         self.Z_MARGIN = 20.0
         self.BLOCK_H = 16.0
         self.WAIT_TIME = 1.5 
-        # 나무 로직
-        self.STAGE_X = 0.000  # 조립할 바닥 X 좌표
-        self.STAGE_Y = 0.000  # 조립할 바닥 Y 좌표
-        self.STAGE_Z = 0.560  # 바닥 판의 Z 높이 (비전 p.z 값 참고)
 
     def call(self, cli, req):
         while not cli.wait_for_service(timeout_sec=1.0):
@@ -69,22 +65,6 @@ class MasterNode(Node):
         self.call(self.cli_r, GetTargetPose.Request(z=-50.0, target_size="Z"))
         time.sleep(self.WAIT_TIME) 
         return True
-    
-    def absolute_insert(self, tx, ty, tz, layer, yaw=0.0):
-        self.get_logger().info(f"📍 ABSOLUTE STACK: Layer {layer} at ({tx}, {ty})")
-        self.call(self.cli_r, GetTargetPose.Request(x=tx, y=ty, target_size="XY"))
-        time.sleep(self.WAIT_TIME)
-        self.call(self.cli_r, GetTargetPose.Request(yaw=yaw, target_size="YAW"))
-        time.sleep(self.WAIT_TIME)
-        
-        z_move = (tz * 1000.0 + self.Z_OFF) - (self.BLOCK_H * layer)
-        self.call(self.cli_r, GetTargetPose.Request(z=z_move - self.Z_MARGIN, target_size="Z"))
-        time.sleep(self.WAIT_TIME)
-        self.call(self.cli_r, GetTargetPose.Request(z=self.Z_MARGIN, target_size="Z"))
-        self.call(self.cli_g, SetBool.Request(data=False)) # 놓기
-        time.sleep(self.WAIT_TIME)
-        self.call(self.cli_r, GetTargetPose.Request(z=-50.0, target_size="Z"))
-        return True
 
     # 💡 yaw_offset 매개변수를 추가했습니다. (기본값은 0.0)
     def insert_to_target(self, color, yaw_offset=0.0):
@@ -123,78 +103,92 @@ class MasterNode(Node):
         self.call(self.cli_r, GetTargetPose.Request(z=-50.0, target_size="Z"))
         time.sleep(self.WAIT_TIME) 
         return True
-    
-
-    def build_tree(self):
-        self.get_logger().info("🌲 [나무 조립 시작] 바닥 조립 -> 베이스 이동 -> 완성")
-        
-        # 1. 바닥 조립 구역에 4x2 빨강 블록 놓기
-        if self.pick_target("4x2_red"):
-            self.absolute_insert(self.STAGE_X, self.STAGE_Y, self.STAGE_Z, layer=0)
-            self.call(self.cli_h, Trigger.Request())
-
-        # 2. 2x2 빨강 블록을 4x2 옆(48mm 오프셋)에 놓기 -> 6x2 판 완성
-        if self.pick_target("2x2_red"):
-            self.absolute_insert(self.STAGE_X + 0.2, self.STAGE_Y, self.STAGE_Z, layer=0)
-            self.call(self.cli_h, Trigger.Request())
-
-        # 3. 다른 4x2 빨강 블록을 그 위 중앙(16mm 오프셋)에 얹기
-        if self.pick_target("4x2_red"):
-            self.absolute_insert(self.STAGE_X + 0.016, self.STAGE_Y, self.STAGE_Z, layer=1)
-            self.call(self.cli_h, Trigger.Request())
-
-        # 4. 조립된 스택1을 통째로 들어서 노란 베이스(2x2)로 이동
-        final_base = self.find_target_with_retry("2x2_yellow")
-        if final_base:
-            self.get_logger().info("📦 조립된 스택1 집어올리는 중...")
-            # 스택의 중심인 STAGE_X + 16mm 지점에서 집기
-            self.call(self.cli_r, GetTargetPose.Request(x=self.STAGE_X + 0.016, y=self.STAGE_Y, target_size="XY"))
-            time.sleep(self.WAIT_TIME)
-            z_pick = (self.STAGE_Z * 1000.0 + self.Z_OFF) - (self.BLOCK_H * 1)
-            self.call(self.cli_r, GetTargetPose.Request(z=z_pick - self.Z_MARGIN, target_size="Z"))
-            self.call(self.cli_g, SetBool.Request(data=True)) # 잡기
-            time.sleep(self.WAIT_TIME)
-            self.call(self.cli_r, GetTargetPose.Request(z=-50.0, target_size="Z"))
-            
-            # 노란 베이스 위에 적재 (레이어 1)
-            self.absolute_insert(final_base.x, final_base.y, final_base.z, layer=1, yaw=final_base.yaw)
-            self.call(self.cli_h, Trigger.Request())
-
-        # 5. 마지막 빨강 2x2 꼭대기에 얹기 (레이어 3)
-        if self.pick_target("2x2_red"):
-            self.absolute_insert(final_base.x, final_base.y, final_base.z, layer=3, yaw=final_base.yaw)
-            self.get_logger().info("✅ 나무 조립 대성공!")
-    
 
     def run(self):
-        self.get_logger().info("🚀 STARTING TREE ASSEMBLY SEQUENCE")
+        self.get_logger().info("🚀 STARTING 3-STEP ASSEMBLY SEQUENCE")
         
-        # 초기화 (홈 위치 이동 및 그리퍼 열기)
         self.call(self.cli_h, Trigger.Request())
         self.call(self.cli_g, SetBool.Request(data=False))
         time.sleep(1.0) 
-
-        # 🌟 [핵심] 나무 조립 전에 필요한 재료가 다 있는지 먼저 확인!
-        # 나무 레시피: 노랑(2x2), 빨강(4x2), 빨강(2x2)
-        self.get_logger().info("🔍 [사전 점검] 나무 재 재료들을 확인합니다...")
         
-        if self.check_color_exists("2x2_yellow") and \
-           self.check_color_exists("4x2_red") and \
-           self.check_color_exists("2x2_red"):
-            
-            self.get_logger().info("🎯 모든 재료 확인 완료! 조립을 시작합니다.")
-            self.build_tree() # 실제 나무 조립 로직 실행
-        else:
-            # 재료가 하나라도 없으면 아예 시작을 안 함
-            self.get_logger().error("❌ 재료 부족! 필드에 노랑 2x2, 빨강 4x2, 빨강 2x2 블록이 다 있는지 확인하세요.")
+        # ---------------------------------------------------------
+        # [당근 조립] 1.노란색 -> 2.노란색 -> 3.초록색
+        # ---------------------------------------------------------
 
-        # 모든 작업 종료 후 홈 위치로
+        self.get_logger().info("🥕 [당근 조립] 1단계: 노란색(2x2) -> 노란색(2x2)")
+        if self.check_color_exists("2x2_yellow"):
+            self.get_logger().info("🎯 1차 조건 충족! (노랑 2x2 픽 -> 노랑 2x2 스택)")
+            if self.pick_target("2x2_yellow"):
+                self.call(self.cli_h, Trigger.Request())
+                if self.insert_to_target("2x2_yellow"):
+                    self.get_logger().info("✅ 당근 1단계 완료")
+                    
+                    self.call(self.cli_h, Trigger.Request())
+                    self.get_logger().info("🥕 [당근 조립] 2단계: 초록색(2x2) -> 노란색(2x2)")
+                    if self.check_color_exists("2x2_blue") and self.check_color_exists("2x2_yellow"):
+                        self.get_logger().info("🎯 2차 조건 충족! (초록 2x2 픽 -> 노랑 2x2 스택)")
+                        if self.pick_target("2x2_blue"):
+                            self.call(self.cli_h, Trigger.Request())
+                            if self.insert_to_target("2x2_yellow"):
+                                self.get_logger().info("✅ 당근 완성!")
+                            else:
+                                self.get_logger().error("❌ 노란색 스택 실패!")
+                        else:
+                            self.get_logger().error("❌ 초록색 픽업 실패!")
+                    else:
+                        self.get_logger().info("⏭️ 2차 작업(초록->노랑) 생략.")
+                        
+                else:
+                    self.get_logger().error("❌ 노란색 스택 실패!")
+            else:
+                self.get_logger().error("❌ 노란색 픽업 실패!")
+        else:
+            self.get_logger().info("⏭️ 1차 작업(노랑->노랑) 생략.")
+        
+        # ---------------------------------------------------------
+        # [신호등 조립] 1.초록색 -> 2.노란색 -> 3.빨간색
+        # ---------------------------------------------------------
+        self.call(self.cli_h, Trigger.Request())
+        
+        self.get_logger().info("🚦 [신호등 조립] 1단계: 노란색(2x2) -> 초록색(2x2)")
+        if self.check_color_exists("2x2_yellow") and self.check_color_exists("2x2_blue"):
+            self.get_logger().info("🎯 1차 조건 충족! (노랑 2x2 픽 -> 초록 2x2 스택)")
+            if self.pick_target("2x2_yellow"):
+                self.call(self.cli_h, Trigger.Request())
+                if self.insert_to_target("2x2_blue"):
+                    self.get_logger().info("✅ 신호등 1단계 완료")
+                    
+                    self.call(self.cli_h, Trigger.Request())
+                    self.get_logger().info("🚦 [신호등 조립] 2단계: 빨간색(2x2) -> 노란색(2x2)")
+                    if self.check_color_exists("2x2_red") and self.check_color_exists("2x2_yellow"):
+                        self.get_logger().info("🎯 2차 조건 충족! (빨강 2x2 픽 -> 노랑 2x2 스택)")
+                        if self.pick_target("2x2_red"):
+                            self.call(self.cli_h, Trigger.Request())
+                            if self.insert_to_target("2x2_yellow"):
+                                self.get_logger().info("✅ 신호등 완성!")
+                            else:
+                                self.get_logger().error("❌ 노란색 스택 실패!")
+                        else:
+                            self.get_logger().error("❌ 빨간색 픽업 실패!")
+                    else:
+                        self.get_logger().info("⏭️ 2차 작업(빨강->노랑) 생략.")
+                        
+                else:
+                    self.get_logger().error("❌ 초록색 스택 실패!")
+            else:
+                self.get_logger().error("❌ 노란색 픽업 실패!")
+        else:
+            self.get_logger().info("⏭️ 1차 작업(노랑->초록) 생략.")
+
+        # ---------------------------------------------------------
+        # 최종 종료
+        # ---------------------------------------------------------
         self.call(self.cli_h, Trigger.Request())
         self.get_logger().info("🎉 ALL SEQUENCE DONE")
 
 def main():
     rclpy.init()
-    node = MasterNode()
+    node = MasterNode2()
     node.run()
     rclpy.shutdown()
 

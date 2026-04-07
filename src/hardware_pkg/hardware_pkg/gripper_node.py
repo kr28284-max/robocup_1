@@ -1,40 +1,9 @@
-# import rclpy
-# from rclpy.node import Node
-# from std_srvs.srv import SetBool
-# import serial
-# import time
-
-# class GripperNode(Node):
-#     def __init__(self):
-#         super().__init__('gripper_node')
-#         self.srv = self.create_service(SetBool, 'control_gripper', self.control_cb)
-#         try:
-#             self.ser = serial.Serial("/dev/ttyACM0", 115200, timeout=1)
-#             time.sleep(2.0)
-#             self.get_logger().info("✅ Gripper Serial Connected")
-#         except Exception as e:
-#             self.get_logger().error(f"❌ Serial Error: {e}")
-
-#     def control_cb(self, request, response):
-#         if request.data: # True -> Grip
-#             self.ser.write(b"grip\n")
-#             response.message = "Grip Success"
-#         else: # False -> Open
-#             self.ser.write(b"open\n")
-#             response.message = "Open Success"
-#         response.success = True
-#         return response
-
-# def main():
-#     rclpy.init()
-#     rclpy.spin(GripperNode())
-#     rclpy.shutdown()
-
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import SetBool
 import serial
 import time
+import threading
 
 class GripperNode(Node):
     def __init__(self):
@@ -43,7 +12,7 @@ class GripperNode(Node):
         
         try:
             # 시리얼 포트 연결 (노트북 설정에 맞춰 ACM0 또는 ACM1 확인 필요)
-            self.ser = serial.Serial("/dev/ttyACM0", 115200, timeout=1)
+            self.ser = serial.Serial("/dev/ttyGripper", 115200, timeout=1)
             
             # 아두이노/그리퍼 컨트롤러 리셋 대기
             time.sleep(2.0)
@@ -82,16 +51,43 @@ class GripperNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = GripperNode()
+    
+    # ROS spin을 백그라운드 스레드에서 실행하여 터미널 입력 대기와 병행 처리
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
+
+    node.get_logger().info("⌨️ 터미널에 'open' 또는 'close'를 입력하세요. (종료: 'exit' 또는 Ctrl+C)")
+
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            cmd = input().strip().lower()
+            
+            if not hasattr(node, 'ser') or not node.ser.is_open:
+                node.get_logger().error("❌ 시리얼이 연결되지 않았습니다.")
+                continue
+
+            if cmd == 'open':
+                node.ser.write(b"open\n")
+                node.get_logger().info("📌 Terminal Sent: open")
+            elif cmd in ['close', 'grip']:
+                node.ser.write(b"grip\n")
+                node.get_logger().info("📌 Terminal Sent: grip")
+            elif cmd == 'exit':
+                break
+            elif cmd != '':
+                node.get_logger().warning("알 수 없는 명령어입니다. 'open' 또는 'close'를 입력하세요.")
+                
     except KeyboardInterrupt:
         node.get_logger().info('Keyboard Interrupt (SIGINT)')
+    except EOFError:
+        pass
     finally:
         if hasattr(node, 'ser') and node.ser.is_open:
             node.ser.close()
             node.get_logger().info("✅ Serial Closed")
-        node.destroy_node()
+        
         rclpy.shutdown()
+        node.destroy_node()
 
 if __name__ == "__main__":
     main()
